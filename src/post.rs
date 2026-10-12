@@ -5,7 +5,7 @@ use {
         client::{Client, QueryFuture},
         error::Result as Rs621Result,
     },
-    chrono::{offset::Utc, DateTime},
+    chrono::{DateTime, offset::Utc},
     derivative::Derivative,
     futures::{
         prelude::*,
@@ -13,8 +13,8 @@ use {
     },
     itertools::Itertools,
     serde::{
-        de::{self, Error as _, Visitor},
         Deserialize, Deserializer, Serialize,
+        de::{self, Error as _, Visitor},
     },
     std::{borrow::Borrow, pin::Pin},
 };
@@ -34,6 +34,8 @@ pub enum PostFileExtension {
     Swf,
     #[serde(rename = "webm")]
     WebM,
+    #[serde(rename = "mp4")]
+    MP4,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
@@ -112,7 +114,7 @@ impl VoteScore {
                 return Err(D::Error::invalid_value(
                     de::Unexpected::Signed(other.into()),
                     &"-1, 0, 1",
-                ))
+                ));
             }
         };
 
@@ -196,11 +198,6 @@ struct PostListApiResponse {
     pub posts: Vec<Post>,
 }
 
-#[derive(Debug, PartialEq, Eq, Deserialize)]
-struct PostShowApiResponse {
-    pub post: Post,
-}
-
 fn nullable_bool_from_json<'de, D>(de: D) -> Result<bool, D::Error>
 where
     D: Deserializer<'de>,
@@ -240,7 +237,7 @@ where
     fn from(q: &[T]) -> Self {
         let tags: Vec<&str> = q.iter().map(|t| t.as_ref()).collect();
         let query_str = tags.join(" ");
-        let url_encoded_tags = urlencoding::encode(&query_str);
+        let url_encoded_tags = urlencoding::encode(&query_str).into_owned();
         let ordered = tags.iter().any(|t| t.starts_with("order:"));
 
         Query {
@@ -709,22 +706,25 @@ fn is_false(b: &bool) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mockito::{mock, Matcher};
+    use mockito::{Matcher, Server};
 
     #[tokio::test]
     async fn post_vote_up_set() {
-        let mut client = Client::new(&mockito::server_url(), b"rs621/unit_test").unwrap();
+        let mut server = Server::new_async().await;
+        let mut client = Client::new(&server.url(), b"rs621/unit_test").unwrap();
         client.login("foo".into(), "bar".into());
 
         let body = r#"{"score":41,"up":44,"down":-3,"our_score":1}"#;
 
-        let _m = mock(
-            "POST",
-            Matcher::Exact("/posts/1234/votes.json?login=foo&api_key=bar".into()),
-        )
-        .match_body("score=1&no_unvote=true")
-        .with_body(body)
-        .create();
+        let _m = server
+            .mock(
+                "POST",
+                Matcher::Exact("/posts/1234/votes.json?login=foo&api_key=bar".into()),
+            )
+            .match_body("score=1&no_unvote=true")
+            .with_body(body)
+            .create_async()
+            .await;
 
         let expected = serde_json::from_str::<VoteScore>(body).unwrap();
 
@@ -739,16 +739,19 @@ mod tests {
 
     #[tokio::test]
     async fn post_favorite() {
-        let mut client = Client::new(&mockito::server_url(), b"rs621/unit_test").unwrap();
+        let mut server = Server::new_async().await;
+        let mut client = Client::new(&server.url(), b"rs621/unit_test").unwrap();
         client.login("foo".into(), "bar".into());
 
-        let _m = mock(
-            "POST",
-            Matcher::Exact("/favorites.json?login=foo&api_key=bar".into()),
-        )
-        .match_body("post_id=3758515")
-        .with_body(include_str!("mocked/favorite.json"))
-        .create();
+        let _m = server
+            .mock(
+                "POST",
+                Matcher::Exact("/favorites.json?login=foo&api_key=bar".into()),
+            )
+            .match_body("post_id=3758515")
+            .with_body(include_str!("mocked/favorite.json"))
+            .create_async()
+            .await;
 
         let expected =
             serde_json::from_str::<serde_json::Value>(include_str!("mocked/favorite.json"))
@@ -767,36 +770,42 @@ mod tests {
 
     #[tokio::test]
     async fn post_unfavorite() {
-        let mut client = Client::new(&mockito::server_url(), b"rs621/unit_test").unwrap();
+        let mut server = Server::new_async().await;
+        let mut client = Client::new(&server.url(), b"rs621/unit_test").unwrap();
         client.login("foo".into(), "bar".into());
 
-        let _m = mock(
-            "POST",
-            Matcher::Exact("/favorites/3758515.json?login=foo&api_key=bar".into()),
-        )
-        .match_body("_method=delete")
-        .create();
+        let _m = server
+            .mock(
+                "POST",
+                Matcher::Exact("/favorites/3758515.json?login=foo&api_key=bar".into()),
+            )
+            .match_body("_method=delete")
+            .create_async()
+            .await;
 
         client.post_unfavorite(3758515).await.unwrap();
     }
 
     #[tokio::test]
     async fn search_ordered() {
-        let client = Client::new(&mockito::server_url(), b"rs621/unit_test").unwrap();
+        let mut server = Server::new_async().await;
+        let client = Client::new(&server.url(), b"rs621/unit_test").unwrap();
 
         let query = Query::from(&["fluffy", "rating:s", "order:score"][..]);
 
-        let _m = mock(
-            "GET",
-            Matcher::Exact(format!(
-                "/posts.json?limit={}&page=1&tags={}",
-                ITER_CHUNK_SIZE, query.url_encoded_tags
-            )),
-        )
-        .with_body(include_str!(
-            "mocked/320_page-1_fluffy_rating-s_order-score.json"
-        ))
-        .create();
+        let _m = server
+            .mock(
+                "GET",
+                Matcher::Exact(format!(
+                    "/posts.json?limit={}&page=1&tags={}",
+                    ITER_CHUNK_SIZE, query.url_encoded_tags
+                )),
+            )
+            .with_body(include_str!(
+                "mocked/320_page-1_fluffy_rating-s_order-score.json"
+            ))
+            .create_async()
+            .await;
 
         assert_eq!(
             client
@@ -818,7 +827,8 @@ mod tests {
 
     #[tokio::test]
     async fn search_above_limit_ordered() {
-        let client = Client::new(&mockito::server_url(), b"rs621/unit_test").unwrap();
+        let mut server = Server::new_async().await;
+        let client = Client::new(&server.url(), b"rs621/unit_test").unwrap();
 
         let query = Query::from(&["fluffy", "rating:s", "order:score"][..]);
         const PAGES: [&str; 2] = [
@@ -827,24 +837,28 @@ mod tests {
         ];
 
         let _m = [
-            mock(
-                "GET",
-                Matcher::Exact(format!(
-                    "/posts.json?limit={}&page=1&tags={}",
-                    ITER_CHUNK_SIZE, query.url_encoded_tags
-                )),
-            )
-            .with_body(PAGES[0])
-            .create(),
-            mock(
-                "GET",
-                Matcher::Exact(format!(
-                    "/posts.json?limit={}&page=2&tags={}",
-                    ITER_CHUNK_SIZE, query.url_encoded_tags
-                )),
-            )
-            .with_body(PAGES[1])
-            .create(),
+            server
+                .mock(
+                    "GET",
+                    Matcher::Exact(format!(
+                        "/posts.json?limit={}&page=1&tags={}",
+                        ITER_CHUNK_SIZE, query.url_encoded_tags
+                    )),
+                )
+                .with_body(PAGES[0])
+                .create_async()
+                .await,
+            server
+                .mock(
+                    "GET",
+                    Matcher::Exact(format!(
+                        "/posts.json?limit={}&page=2&tags={}",
+                        ITER_CHUNK_SIZE, query.url_encoded_tags
+                    )),
+                )
+                .with_body(PAGES[1])
+                .create_async()
+                .await,
         ];
 
         assert_eq!(
@@ -871,22 +885,25 @@ mod tests {
 
     #[tokio::test]
     async fn search_before_id() {
-        let client = Client::new(&mockito::server_url(), b"rs621/unit_test").unwrap();
+        let mut server = Server::new_async().await;
+        let client = Client::new(&server.url(), b"rs621/unit_test").unwrap();
 
         let query = Query::from(&["fluffy", "rating:s"][..]);
         let response_json = include_str!("mocked/320_fluffy_rating-s_before-2269211.json");
         let response: PostListApiResponse = serde_json::from_str(response_json).unwrap();
         let expected: Vec<_> = response.posts.into_iter().take(80).map(|x| Ok(x)).collect();
 
-        let _m = mock(
-            "GET",
-            Matcher::Exact(format!(
-                "/posts.json?limit={}&page=b2269211&tags={}",
-                ITER_CHUNK_SIZE, query.url_encoded_tags
-            )),
-        )
-        .with_body(response_json)
-        .create();
+        let _m = server
+            .mock(
+                "GET",
+                Matcher::Exact(format!(
+                    "/posts.json?limit={}&page=b2269211&tags={}",
+                    ITER_CHUNK_SIZE, query.url_encoded_tags
+                )),
+            )
+            .with_body(response_json)
+            .create_async()
+            .await;
 
         assert_eq!(
             client
@@ -900,7 +917,8 @@ mod tests {
 
     #[tokio::test]
     async fn search_above_limit() {
-        let client = Client::new(&mockito::server_url(), b"rs621/unit_test").unwrap();
+        let mut server = Server::new_async().await;
+        let client = Client::new(&server.url(), b"rs621/unit_test").unwrap();
 
         let query = Query::from(&["fluffy", "rating:s"][..]);
         let responses_json: [&str; 2] = [
@@ -922,24 +940,28 @@ mod tests {
             .collect();
 
         let _m = [
-            mock(
-                "GET",
-                Matcher::Exact(format!(
-                    "/posts.json?limit={}&page=1&tags={}",
-                    ITER_CHUNK_SIZE, query.url_encoded_tags
-                )),
-            )
-            .with_body(responses_json[0])
-            .create(),
-            mock(
-                "GET",
-                Matcher::Exact(format!(
-                    "/posts.json?limit={}&page=b2269211&tags={}",
-                    ITER_CHUNK_SIZE, query.url_encoded_tags
-                )),
-            )
-            .with_body(responses_json[1])
-            .create(),
+            server
+                .mock(
+                    "GET",
+                    Matcher::Exact(format!(
+                        "/posts.json?limit={}&page=1&tags={}",
+                        ITER_CHUNK_SIZE, query.url_encoded_tags
+                    )),
+                )
+                .with_body(responses_json[0])
+                .create_async()
+                .await,
+            server
+                .mock(
+                    "GET",
+                    Matcher::Exact(format!(
+                        "/posts.json?limit={}&page=b2269211&tags={}",
+                        ITER_CHUNK_SIZE, query.url_encoded_tags
+                    )),
+                )
+                .with_body(responses_json[1])
+                .create_async()
+                .await,
         ];
 
         assert_eq!(
@@ -954,20 +976,23 @@ mod tests {
 
     #[tokio::test]
     async fn search_no_result() {
-        let client = Client::new(&mockito::server_url(), b"rs621/unit_test").unwrap();
+        let mut server = Server::new_async().await;
+        let client = Client::new(&server.url(), b"rs621/unit_test").unwrap();
 
         let query = Query::from(&["fluffy", "rating:s"][..]);
         let response = "{\"posts\":[]}";
 
-        let _m = mock(
-            "GET",
-            Matcher::Exact(format!(
-                "/posts.json?limit={}&page=1&tags={}",
-                ITER_CHUNK_SIZE, query.url_encoded_tags
-            )),
-        )
-        .with_body(response)
-        .create();
+        let _m = server
+            .mock(
+                "GET",
+                Matcher::Exact(format!(
+                    "/posts.json?limit={}&page=1&tags={}",
+                    ITER_CHUNK_SIZE, query.url_encoded_tags
+                )),
+            )
+            .with_body(response)
+            .create_async()
+            .await;
 
         assert_eq!(
             client.post_search(query).take(5).collect::<Vec<_>>().await,
@@ -977,22 +1002,25 @@ mod tests {
 
     #[tokio::test]
     async fn search_simple() {
-        let client = Client::new(&mockito::server_url(), b"rs621/unit_test").unwrap();
+        let mut server = Server::new_async().await;
+        let client = Client::new(&server.url(), b"rs621/unit_test").unwrap();
 
         let query = Query::from(&["fluffy", "rating:s"][..]);
         let response_json = include_str!("mocked/320_fluffy_rating-s.json");
         let response: PostListApiResponse = serde_json::from_str(response_json).unwrap();
         let expected: Vec<_> = response.posts.into_iter().take(5).map(|x| Ok(x)).collect();
 
-        let _m = mock(
-            "GET",
-            Matcher::Exact(format!(
-                "/posts.json?limit={}&page=1&tags={}",
-                ITER_CHUNK_SIZE, query.url_encoded_tags
-            )),
-        )
-        .with_body(response_json)
-        .create();
+        let _m = server
+            .mock(
+                "GET",
+                Matcher::Exact(format!(
+                    "/posts.json?limit={}&page=1&tags={}",
+                    ITER_CHUNK_SIZE, query.url_encoded_tags
+                )),
+            )
+            .with_body(response_json)
+            .create_async()
+            .await;
 
         assert_eq!(
             client.post_search(query).take(5).collect::<Vec<_>>().await,
@@ -1002,15 +1030,18 @@ mod tests {
 
     #[tokio::test]
     async fn get_posts_by_id() {
-        let client = Client::new(&mockito::server_url(), b"rs621/unit_test").unwrap();
+        let mut server = Server::new_async().await;
+        let client = Client::new(&server.url(), b"rs621/unit_test").unwrap();
 
         let response_json = include_str!("mocked/id_8595_535_2105_1470.json");
         let response: PostListApiResponse = serde_json::from_str(response_json).unwrap();
         let expected = response.posts;
 
-        let _m = mock("GET", "/posts.json?tags=id%3A8595,535,2105,1470")
+        let _m = server
+            .mock("GET", "/posts.json?tags=id%3A8595,535,2105,1470")
             .with_body(response_json)
-            .create();
+            .create_async()
+            .await;
 
         assert_eq!(
             client

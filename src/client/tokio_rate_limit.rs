@@ -5,7 +5,7 @@ use std::future::Future;
 use std::sync::Arc;
 
 use tokio::sync::{Mutex, MutexGuard};
-use tokio::time::{sleep_until, Instant};
+use tokio::time::{Instant, sleep_until};
 
 #[derive(Debug, Clone, Default)]
 pub struct RateLimit {
@@ -24,7 +24,7 @@ impl<'a> Drop for Guard<'a> {
 }
 
 impl RateLimit {
-    async fn lock(&self) -> Guard {
+    async fn lock(&self) -> Guard<'_> {
         loop {
             let now = Instant::now();
 

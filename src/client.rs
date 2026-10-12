@@ -215,7 +215,7 @@ impl Client {
     pub fn get_json_endpoint(
         &self,
         endpoint: &str,
-    ) -> impl Future<Output = Result<serde_json::Value>> {
+    ) -> impl Future<Output = Result<serde_json::Value>> + use<> {
         let url = self.url(endpoint);
         let request = url
             .clone()
@@ -247,19 +247,22 @@ impl Client {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mockito::mock;
+    use mockito::Server;
 
     #[tokio::test]
     async fn get_json_endpoint_http_error() {
-        let client = Client::new(&mockito::server_url(), b"rs621/unit_test").unwrap();
+        let mut server = Server::new_async().await;
+        let client = Client::new(&server.url(), b"rs621/unit_test").unwrap();
 
         // note: these are still using old endpoint but it doesn't matter here
-        let _m = mock("GET", "/post/show.json?id=8595")
+        let _m = server
+            .mock("GET", "/post/show.json?id=8595")
             .with_status(500)
             .with_body(r#"{"success":false,"reason":"foo"}"#)
-            .create();
+            .create_async()
+            .await;
 
-        let server_url = Url::parse(&mockito::server_url()).unwrap();
+        let server_url = Url::parse(&server.url()).unwrap();
 
         assert_eq!(
             client.get_json_endpoint("/post/show.json?id=8595").await,
@@ -273,11 +276,14 @@ mod tests {
 
     #[tokio::test]
     async fn get_json_endpoint_success() {
-        let client = Client::new(&mockito::server_url(), b"rs621/unit_test").unwrap();
+        let mut server = Server::new_async().await;
+        let client = Client::new(&server.url(), b"rs621/unit_test").unwrap();
 
-        let _m = mock("GET", "/post/show.json?id=8595")
+        let _m = server
+            .mock("GET", "/post/show.json?id=8595")
             .with_body(r#"{"dummy":"json"}"#)
-            .create();
+            .create_async()
+            .await;
 
         assert_eq!(
             client.get_json_endpoint("/post/show.json?id=8595").await,
@@ -291,25 +297,24 @@ mod tests {
 
     #[tokio::test]
     async fn create_client_with_proxy_works() {
-        assert!(Client::with_proxy(
-            &mockito::server_url(),
-            b"rs621/unit_test",
-            &mockito::server_url()
-        )
-        .is_ok());
+        let server = Server::new_async().await;
+        assert!(Client::with_proxy(&server.url(), b"rs621/unit_test", &server.url()).is_ok());
 
         #[cfg(feature = "socks")]
-        assert!(Client::with_proxy(
-            &mockito::server_url(),
-            b"rs621/unit_test",
-            &("socks5://".to_owned() + format!("{}", &mockito::server_address()).as_str())
-        )
-        .is_ok());
+        assert!(
+            Client::with_proxy(
+                &server.url(),
+                b"rs621/unit_test",
+                &("socks5://".to_owned() + format!("{}", &server.host_with_port()).as_str())
+            )
+            .is_ok()
+        );
     }
 
     #[tokio::test]
     async fn create_client_with_invalid_proxy_fails() {
-        assert!(Client::with_proxy(&mockito::server_url(), b"rs621/unit/test", "").is_err());
+        let server = Server::new_async().await;
+        assert!(Client::with_proxy(&server.url(), b"rs621/unit/test", "").is_err());
     }
 
     #[tokio::test]

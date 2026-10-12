@@ -5,7 +5,7 @@ use {
         client::{Client, QueryFuture},
         error::Result as Rs621Result,
     },
-    chrono::{offset::Utc, DateTime},
+    chrono::{DateTime, offset::Utc},
     derivative::Derivative,
     futures::{
         prelude::*,
@@ -339,11 +339,12 @@ impl Client {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mockito::mock;
+    use mockito::Server;
 
     #[tokio::test]
     async fn pool_search() {
-        let client = Client::new(&mockito::server_url(), b"rs621/unit_test").unwrap();
+        let mut server = Server::new_async().await;
+        let client = Client::new(&server.url(), b"rs621/unit_test").unwrap();
 
         let expected: Vec<Rs621Result<Pool>> = serde_json::from_str::<PoolSearchApiResponse>(
             include_str!("mocked/pool_search-foo.json"),
@@ -354,13 +355,17 @@ mod tests {
         .collect();
 
         let _m = [
-            mock("GET", "/pools.json?page=1&search%5Bname_matches%5D=foo")
+            server
+                .mock("GET", "/pools.json?page=1&search%5Bname_matches%5D=foo")
                 .with_body(include_str!("mocked/pool_search-foo.json"))
-                .create(),
+                .create_async()
+                .await,
             // have the next page be empty to end the iterator
-            mock("GET", "/pools.json?page=2&search%5Bname_matches%5D=foo")
+            server
+                .mock("GET", "/pools.json?page=2&search%5Bname_matches%5D=foo")
                 .with_body("[]")
-                .create(),
+                .create_async()
+                .await,
         ];
 
         // Should all contain foo in the name
